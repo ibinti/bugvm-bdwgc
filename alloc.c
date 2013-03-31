@@ -491,7 +491,7 @@ static void per_live_object_helper(struct hblk *h, word fn)
 
     do {
         p = (ptr_t)(h -> hb_body + i);
-        if (mark_bit_from_hdr(hhdr, i)) {
+        if (mark_bit_from_hdr(hhdr, MARK_BIT_NO(i, sz))) {
           it->apply_func(p, kind, sz, it->data);
         }
         i += (int)sz;
