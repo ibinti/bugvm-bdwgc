@@ -475,6 +475,64 @@ GC_INNER GC_bool GC_try_to_collect_inner(GC_stop_func stop_func)
     return(TRUE);
 }
 
+typedef struct {
+    void (*apply_func) (void *, unsigned char, size_t, void *);
+    void *data;
+} per_live_object_iterator;
+
+static void per_live_object_helper(struct hblk *h, word fn)
+{
+    hdr * hhdr = HDR(h);
+    size_t sz = hhdr -> hb_sz;
+    unsigned char kind = hhdr -> hb_obj_kind;
+    per_live_object_iterator * it = (per_live_object_iterator *)fn;
+    int i = 0;
+    ptr_t p;
+
+    do {
+        p = (ptr_t)(h -> hb_body + i);
+        if (mark_bit_from_hdr(hhdr, i)) {
+          it->apply_func(p, kind, sz, it->data);
+        }
+        i += (int)sz;
+    } while ((word)i + sz <= BYTES_TO_WORDS(HBLKSIZE));
+}
+
+GC_API void GC_apply_to_each_live_object(void (*apply_func)(void *, unsigned char, size_t, void *), void *data)
+{
+    int dummy;
+    per_live_object_iterator iterator;
+    DCL_LOCK_STATE;
+    IF_CANCEL(int cancel_state);
+
+    DISABLE_CANCEL(cancel_state);
+    LOCK();
+    if (!EXPECT(GC_is_initialized, TRUE)) GC_init();
+    STOP_WORLD();
+#   ifdef THREAD_LOCAL_ALLOC
+      GC_world_stopped = TRUE;
+#   endif
+    /* Minimize junk left in my registers and on the stack */
+    GC_clear_a_few_frames();
+    GC_noop6(0,0,0,0,0,0);
+    GC_invalidate_mark_state();  /* Flush mark stack.    */
+    GC_clear_marks();
+    GC_initiate_gc();
+    while (1) {
+        if (GC_mark_some((ptr_t)(&dummy))) break;
+    }
+    iterator.apply_func = apply_func;
+    iterator.data = data;
+    GC_apply_to_all_blocks (per_live_object_helper, (word)&iterator);
+#   ifdef THREAD_LOCAL_ALLOC
+      GC_world_stopped = FALSE;
+#   endif
+    START_WORLD();
+    UNLOCK();
+    RESTORE_CANCEL(cancel_state);
+    return;
+}
+
 /*
  * Perform n units of garbage collection work.  A unit is intended to touch
  * roughly GC_RATE pages.  Every once in a while, we do more than that.
