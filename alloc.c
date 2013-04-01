@@ -480,22 +480,28 @@ typedef struct {
     void *data;
 } per_live_object_iterator;
 
-static void per_live_object_helper(struct hblk *h, word fn)
+STATIC void per_live_object_helper(struct hblk *hbp, word fn)
 {
-    hdr * hhdr = HDR(h);
+    struct hblkhdr * hhdr = HDR(hbp);
     size_t sz = hhdr -> hb_sz;
     unsigned char kind = hhdr -> hb_obj_kind;
     per_live_object_iterator * it = (per_live_object_iterator *)fn;
-    int i = 0;
-    ptr_t p;
+    size_t bit_no;
+    char *p, *plim;
 
-    do {
-        p = (ptr_t)(h -> hb_body + i);
-        if (mark_bit_from_hdr(hhdr, MARK_BIT_NO(i, sz))) {
+    p = hbp->hb_body;
+    if (sz > MAXOBJBYTES) {
+      plim = p;
+    } else {
+      plim = hbp->hb_body + HBLKSIZE - sz;
+    }
+    /* go through all words in block */
+    for (bit_no = 0; (word)p <= (word)plim;
+         bit_no += MARK_BIT_OFFSET(sz), p += sz) {
+      if (mark_bit_from_hdr(hhdr, bit_no)) {
           it->apply_func(p, kind, sz, it->data);
-        }
-        i += (int)sz;
-    } while ((word)i + sz <= BYTES_TO_WORDS(HBLKSIZE));
+      }
+    }
 }
 
 GC_API void GC_apply_to_each_live_object(void (*apply_func)(void *, unsigned char, size_t, void *), void *data)
