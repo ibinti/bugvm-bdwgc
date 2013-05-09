@@ -3795,7 +3795,7 @@ GC_INNER void GC_remove_protection(struct hblk *h, word nblocks,
 
 #endif /* PCR_VDB */
 
-#if defined(MPROTECT_VDB) && defined(DARWIN)
+#if defined(MPROTECT_VDB) && defined(DARWIN) && !defined(GC_DISABLE_INCREMENTAL)
 /* The following sources were used as a "reference" for this exception
    handling code:
       1. Apple's mach/xnu documentation
