@@ -1468,6 +1468,7 @@ GC_API void GC_CALL GC_register_has_static_roots_callback(
                                         GC_has_static_roots_func);
 
 GC_API void GC_apply_to_each_live_object(void (*apply_func)(void *, unsigned char, size_t, void *), void *data);
+GC_API void GC_apply_to_each_object(int (*apply_func)(void *, unsigned char, size_t, int, void *), void *data);
 
 #if defined(GC_WIN32_THREADS) \
     && (!defined(GC_PTHREADS) || defined(GC_BUILD) || defined(WINAPI))
