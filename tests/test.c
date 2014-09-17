@@ -116,14 +116,10 @@
 
 # include <stdarg.h>
 
-#ifndef GC_ALPHA_VERSION
-# define GC_ALPHA_VERSION GC_TMP_ALPHA_VERSION
-#endif
-
 #define CHECH_GCLIB_VERSION \
             if (GC_get_version() != ((GC_VERSION_MAJOR<<16) \
                                     | (GC_VERSION_MINOR<<8) \
-                                    | GC_ALPHA_VERSION)) { \
+                                    | GC_VERSION_MICRO)) { \
               GC_printf("libgc version mismatch\n"); \
               exit(1); \
             }
@@ -402,7 +398,7 @@ sexpr gcj_ints(int low, int up)
 }
 #endif /* GC_GCJ_SUPPORT */
 
-/* To check uncollectable allocation we build lists with disguised cdr  */
+/* To check uncollectible allocation we build lists with disguised cdr  */
 /* pointers, and make sure they don't go away.                          */
 sexpr uncollectable_ints(int low, int up)
 {
@@ -552,6 +548,25 @@ void check_marks_int_list(sexpr x)
 
 #endif
 
+void test_generic_malloc_or_special(void *p) {
+  size_t size;
+  int kind = GC_get_kind_and_size(p, &size);
+  void *p2;
+
+  if (size != GC_size(p)) {
+    GC_printf("GC_get_kind_and_size returned size not matching GC_size\n");
+    FAIL;
+  }
+  p2 = GC_GENERIC_OR_SPECIAL_MALLOC(10, kind);
+  CHECK_OUT_OF_MEMORY(p2);
+  if (GC_get_kind_and_size(p2, NULL) != kind) {
+    GC_printf("GC_generic_or_special_malloc:"
+              " unexpected kind of returned object\n");
+    FAIL;
+  }
+  GC_FREE(p2);
+}
+
 /* Try to force a to be strangely aligned */
 struct {
   char dummy;
@@ -600,6 +615,7 @@ void *GC_CALLBACK reverse_test_inner(void *data)
     b = ints(1, 50);
     c = ints(1, BIG);
     d = uncollectable_ints(1, 100);
+    test_generic_malloc_or_special(d);
     e = uncollectable_ints(1, 1);
     /* Check that realloc updates object descriptors correctly */
     collectable_count++;
@@ -610,6 +626,7 @@ void *GC_CALLBACK reverse_test_inner(void *data)
     f[5] = ints(1,17);
     collectable_count++;
     g = (sexpr *)GC_MALLOC(513 * sizeof(sexpr));
+    test_generic_malloc_or_special(g);
     realloc_count++;
     g = (sexpr *)GC_REALLOC((void *)g, 800 * sizeof(sexpr));
     CHECK_OUT_OF_MEMORY(g);
@@ -623,7 +640,7 @@ void *GC_CALLBACK reverse_test_inner(void *data)
       h[1999] = gcj_ints(1,200);
       for (i = 0; i < 51; ++i)
         h[1999] = gcj_reverse(h[1999]);
-      /* Leave it as the reveresed list for now. */
+      /* Leave it as the reversed list for now. */
 #   else
       h[1999] = ints(1,200);
 #   endif
@@ -1287,6 +1304,7 @@ void run_one_test(void)
              GC_FREE(GC_MALLOC(0));
              (void)GC_MALLOC_ATOMIC(0);
              GC_FREE(GC_MALLOC_ATOMIC(0));
+             test_generic_malloc_or_special(GC_malloc_atomic(1));
            }
          }
 #   ifdef GC_GCJ_SUPPORT

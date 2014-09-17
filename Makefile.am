@@ -141,14 +141,12 @@ AM_CFLAGS = @GC_CFLAGS@
 ## FIXME: we shouldn't have to do this, but automake forces us to.
 ## We use -Wp,-P to strip #line directives.  Irix `as' chokes on
 ## these.
-if COMPILER_XLC
-  ## XLC neither requires nor tolerates the unnecessary assembler goop
+if ASM_WITH_CPP_UNSUPPORTED
   ASM_CPP_OPTIONS =
 else
-  ## We use -Wp,-P to strip #line directives.  Irix `as' chokes on
-  ## these.
   ASM_CPP_OPTIONS = -Wp,-P -x assembler-with-cpp
 endif
+
 .s.lo:
 	$(LTCOMPILE) $(ASM_CPP_OPTIONS) -c $<
 
@@ -173,8 +171,7 @@ EXTRA_DIST += README.QUICK TODO
 # :GOTCHA: deliberately we do not include 'Makefile'
 EXTRA_DIST += BCC_MAKEFILE NT_MAKEFILE \
     OS2_MAKEFILE PCR-Makefile digimars.mak EMX_MAKEFILE \
-    Makefile.direct Makefile.dj SMakefile.amiga \
-    WCC_MAKEFILE autogen.sh build_atomic_ops.sh build_atomic_ops.sh.cygwin \
+    Makefile.direct SMakefile.amiga WCC_MAKEFILE autogen.sh \
     NT_STATIC_THREADS_MAKEFILE NT_X64_STATIC_THREADS_MAKEFILE \
     NT_X64_THREADS_MAKEFILE CMakeLists.txt tests/CMakeLists.txt
 

@@ -108,8 +108,8 @@ typedef struct GC_ms_entry * (*GC_mark_proc)(GC_word * /* addr */,
                         /* The latter alternative can be used if each   */
                         /* object contains a type descriptor in the     */
                         /* first word.                                  */
-                        /* Note that in multithreaded environments      */
-                        /* per object descriptors must be located in    */
+                        /* Note that in the multi-threaded environments */
+                        /* per-object descriptors must be located in    */
                         /* either the first two or last two words of    */
                         /* the object, since only those are guaranteed  */
                         /* to be cleared while the allocation lock is   */
@@ -184,7 +184,7 @@ GC_API unsigned GC_CALL GC_new_proc(GC_mark_proc);
 GC_API unsigned GC_CALL GC_new_proc_inner(GC_mark_proc);
 
 /* Allocate an object of a given kind.  By default, there are only      */
-/* a few kinds: composite (pointer-free), atomic, uncollectable, etc.   */
+/* a few kinds: composite (pointer-free), atomic, uncollectible, etc.   */
 /* We claim it is possible for clever client code that understands the  */
 /* GC internals to add more, e.g. to communicate object layout          */
 /* information to the collector.  Note that in the multi-threaded       */
@@ -193,14 +193,40 @@ GC_API unsigned GC_CALL GC_new_proc_inner(GC_mark_proc);
 /* the descriptor is not correct.  Even in the single-threaded case,    */
 /* we need to be sure that cleared objects on a free list don't         */
 /* cause a GC crash if they are accidentally traced.                    */
-GC_API GC_ATTR_MALLOC void * GC_CALL GC_generic_malloc(size_t /* lb */,
-                                                       int /* k */);
+GC_API GC_ATTR_MALLOC GC_ATTR_ALLOC_SIZE(1) void * GC_CALL GC_generic_malloc(
+                                                            size_t /* lb */,
+                                                            int /* knd */);
 
-GC_API GC_ATTR_MALLOC void * GC_CALL GC_generic_malloc_ignore_off_page(
-                                        size_t /* lb */, int /* k */);
+GC_API GC_ATTR_MALLOC GC_ATTR_ALLOC_SIZE(1) void * GC_CALL
+                                        GC_generic_malloc_ignore_off_page(
+                                            size_t /* lb */, int /* knd */);
                                 /* As above, but pointers to past the   */
                                 /* first page of the resulting object   */
                                 /* are ignored.                         */
+
+/* Same as above but primary for allocating an object of the same kind  */
+/* as an existing one (kind obtained by GC_get_kind_and_size).          */
+/* Not suitable for GCJ and typed-malloc kinds.                         */
+GC_API GC_ATTR_MALLOC GC_ATTR_ALLOC_SIZE(1) void * GC_CALL
+                                        GC_generic_or_special_malloc(
+                                            size_t /* size */, int /* knd */);
+GC_API GC_ATTR_MALLOC GC_ATTR_ALLOC_SIZE(1) void * GC_CALL
+                                        GC_debug_generic_or_special_malloc(
+                                            size_t /* size */, int /* knd */,
+                                            GC_EXTRA_PARAMS);
+
+#ifdef GC_DEBUG
+# define GC_GENERIC_OR_SPECIAL_MALLOC(sz, knd) \
+                GC_debug_generic_or_special_malloc(sz, knd, GC_EXTRAS)
+#else
+# define GC_GENERIC_OR_SPECIAL_MALLOC(sz, knd) \
+                GC_generic_or_special_malloc(sz, knd)
+#endif /* !GC_DEBUG */
+
+/* Similar to GC_size but returns object kind.  Size is returned too    */
+/* if psize is not NULL.                                                */
+GC_API int GC_CALL GC_get_kind_and_size(const void *, size_t * /* psize */)
+                                                        GC_ATTR_NONNULL(1);
 
 typedef void (GC_CALLBACK * GC_describe_type_fn)(void * /* p */,
                                                  char * /* out_buf */);

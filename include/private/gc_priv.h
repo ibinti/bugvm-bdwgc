@@ -148,6 +148,7 @@ typedef char * ptr_t;   /* A generic pointer to which we can add        */
   /* The "inline" keyword is determined by Autoconf AC_C_INLINE.    */
 # define GC_INLINE static inline
 #elif defined(_MSC_VER) || defined(__INTEL_COMPILER) || defined(__DMC__) \
+        || ((__GNUC__ >= 3) && defined(__STRICT_ANSI__)) \
         || defined(__WATCOMC__)
 # define GC_INLINE static __inline
 #elif (__GNUC__ >= 3) || defined(__sun)
@@ -762,6 +763,10 @@ GC_EXTERN GC_warn_proc GC_current_warn_proc;
 
 # define HBLKDISPL(objptr) (((size_t) (objptr)) & (HBLKSIZE-1))
 
+/* Round up allocation size (in bytes) to a multiple of a granule.      */
+#define ROUNDUP_GRANULE_SIZE(bytes) \
+                (((bytes) + (GRANULE_BYTES - 1)) & ~(GRANULE_BYTES - 1))
+
 /* Round up byte allocation requests to integral number of words, etc. */
 # define ROUNDED_UP_GRANULES(n) \
         BYTES_TO_GRANULES((n) + (GRANULE_BYTES - 1 + EXTRA_BYTES))
@@ -902,6 +907,9 @@ struct hblkhdr {
                                 /* not.  Used to mark objects needed by */
                                 /* reclaim notifier.                    */
 #       endif
+#       ifdef MARK_BIT_PER_GRANULE
+#         define LARGE_BLOCK 0x20
+#       endif
     unsigned short hb_last_reclaimed;
                                 /* Value of GC_gc_no when block was     */
                                 /* last allocated or swept. May wrap.   */
@@ -910,6 +918,12 @@ struct hblkhdr {
                                 /* when the header was allocated, or    */
                                 /* when the size of the block last      */
                                 /* changed.                             */
+#   ifdef MARK_BIT_PER_OBJ
+      unsigned32 hb_inv_sz;     /* A good upper bound for 2**32/hb_sz.  */
+                                /* For large objects, we use            */
+                                /* LARGE_INV_SZ.                        */
+#     define LARGE_INV_SZ (1 << 16)
+#   endif
     size_t hb_sz;  /* If in use, size in bytes, of objects in the block. */
                    /* if free, the size in bytes of the whole block      */
                    /* We assume that this is convertible to signed_word  */
@@ -917,13 +931,7 @@ struct hblkhdr {
                    /* generating free blocks larger than that.           */
     word hb_descr;              /* object descriptor for marking.  See  */
                                 /* mark.h.                              */
-#   ifdef MARK_BIT_PER_OBJ
-      unsigned32 hb_inv_sz;     /* A good upper bound for 2**32/hb_sz.  */
-                                /* For large objects, we use            */
-                                /* LARGE_INV_SZ.                        */
-#     define LARGE_INV_SZ (1 << 16)
-#   else
-      unsigned char hb_large_block;
+#   ifdef MARK_BIT_PER_GRANULE
       short * hb_map;           /* Essentially a table of remainders    */
                                 /* mod BYTES_TO_GRANULES(hb_sz), except */
                                 /* for large blocks.  See GC_obj_map.   */
@@ -1062,6 +1070,13 @@ struct roots {
 # endif
 #endif /* !MAX_HEAP_SECTS */
 
+typedef struct GC_ms_entry {
+    ptr_t mse_start;    /* First word of object, word aligned.  */
+    union word_ptr_ao_u mse_descr;
+                        /* Descriptor; low order two bits are tags,     */
+                        /* as described in gc_mark.h.                   */
+} mse;
+
 /* Lists of all heap blocks and free lists      */
 /* as well as other random data structures      */
 /* that should not be scanned by the            */
@@ -1082,7 +1097,7 @@ struct roots {
 /* compiled.                                    */
 
 struct _GC_arrays {
-  word _heapsize;               /* Heap size in bytes.                  */
+  word _heapsize;       /* Heap size in bytes (value never goes down).  */
   word _requested_heapsize;     /* Heap size due to explicit expansion. */
   ptr_t _last_heap_addr;
   ptr_t _prev_heap_addr;
@@ -1125,28 +1140,18 @@ struct _GC_arrays {
   ptr_t _scratch_end_ptr;
   ptr_t _scratch_last_end_ptr;
         /* Used by headers.c, and can easily appear to point to */
-        /* heap.                                                */
-  GC_mark_proc _mark_procs[MAX_MARK_PROCS];
-        /* Table of user-defined mark procedures.  There is     */
-        /* a small number of these, which can be referenced     */
-        /* by DS_PROC mark descriptors.  See gc_mark.h.         */
-# ifndef SEPARATE_GLOBALS
-#   define GC_objfreelist GC_arrays._objfreelist
-    void *_objfreelist[MAXOBJGRANULES+1];
-                          /* free list for objects */
-#   define GC_aobjfreelist GC_arrays._aobjfreelist
-    void *_aobjfreelist[MAXOBJGRANULES+1];
-                          /* free list for atomic objs  */
-# endif
-  void *_uobjfreelist[MAXOBJGRANULES+1];
-                          /* Uncollectable but traced objs      */
-                          /* objects on this and auobjfreelist  */
-                          /* are always marked, except during   */
-                          /* garbage collections.               */
-# ifdef ATOMIC_UNCOLLECTABLE
-#   define GC_auobjfreelist GC_arrays._auobjfreelist
-    void *_auobjfreelist[MAXOBJGRANULES+1];
-                        /* Atomic uncollectable but traced objs */
+        /* heap.  Also used by GC_register_dynamic_libraries(). */
+  mse *_mark_stack;
+        /* Limits of stack for GC_mark routine.  All ranges     */
+        /* between GC_mark_stack (incl.) and GC_mark_stack_top  */
+        /* (incl.) still need to be marked from.                */
+  mse *_mark_stack_limit;
+# ifdef PARALLEL_MARK
+    mse *volatile _mark_stack_top;
+        /* Updated only with mark lock held, but read asynchronously.   */
+        /* TODO: Use union to avoid casts to AO_t */
+# else
+    mse *_mark_stack_top;
 # endif
   word _composite_in_use; /* Number of bytes in the accessible  */
                           /* composite objects.                 */
@@ -1158,15 +1163,56 @@ struct _GC_arrays {
 # else
 #   define GC_unmapped_bytes 0
 # endif
+  bottom_index * _all_nils;
+# ifdef ENABLE_TRACE
+#   define GC_trace_addr GC_arrays._trace_addr
+    ptr_t _trace_addr;
+# endif
+  GC_mark_proc _mark_procs[MAX_MARK_PROCS];
+        /* Table of user-defined mark procedures.  There is     */
+        /* a small number of these, which can be referenced     */
+        /* by DS_PROC mark descriptors.  See gc_mark.h.         */
+  char _modws_valid_offsets[sizeof(word)];
+                                /* GC_valid_offsets[i] ==>                */
+                                /* GC_modws_valid_offsets[i%sizeof(word)] */
+# if !defined(MSWIN32) && !defined(MSWINCE) && !defined(CYGWIN32)
+#   define GC_root_index GC_arrays._root_index
+    struct roots * _root_index[RT_SIZE];
+# endif
+# ifdef SAVE_CALL_CHAIN
+#   define GC_last_stack GC_arrays._last_stack
+    struct callinfo _last_stack[NFRAMES];
+                /* Stack at last garbage collection.  Useful for        */
+                /* debugging mysterious object disappearances.  In the  */
+                /* multi-threaded case, we currently only save the      */
+                /* calling stack.                                       */
+# endif
+# ifndef SEPARATE_GLOBALS
+#   define GC_objfreelist GC_arrays._objfreelist
+    void *_objfreelist[MAXOBJGRANULES+1];
+                          /* free list for objects */
+#   define GC_aobjfreelist GC_arrays._aobjfreelist
+    void *_aobjfreelist[MAXOBJGRANULES+1];
+                          /* free list for atomic objs  */
+# endif
+  void *_uobjfreelist[MAXOBJGRANULES+1];
+                          /* Uncollectible but traced objs      */
+                          /* objects on this and auobjfreelist  */
+                          /* are always marked, except during   */
+                          /* garbage collections.               */
+# ifdef ATOMIC_UNCOLLECTABLE
+#   define GC_auobjfreelist GC_arrays._auobjfreelist
+    void *_auobjfreelist[MAXOBJGRANULES+1];
+                        /* Atomic uncollectible but traced objs */
+# endif
   size_t _size_map[MAXOBJBYTES+1];
         /* Number of granules to allocate when asked for a certain      */
         /* number of bytes.                                             */
-
 # ifdef STUBBORN_ALLOC
 #   define GC_sobjfreelist GC_arrays._sobjfreelist
     ptr_t _sobjfreelist[MAXOBJGRANULES+1];
+                          /* Free list for immutable objects.   */
 # endif
-                          /* free list for immutable objects    */
 # ifdef MARK_BIT_PER_GRANULE
 #   define GC_obj_map GC_arrays._obj_map
     short * _obj_map[MAXOBJGRANULES+1];
@@ -1186,9 +1232,6 @@ struct _GC_arrays {
   char _valid_offsets[VALID_OFFSET_SZ];
                                 /* GC_valid_offsets[i] == TRUE ==> i    */
                                 /* is registered as a displacement.     */
-  char _modws_valid_offsets[sizeof(word)];
-                                /* GC_valid_offsets[i] ==>                */
-                                /* GC_modws_valid_offsets[i%sizeof(word)] */
 # ifdef STUBBORN_ALLOC
 #   define GC_changed_pages GC_arrays._changed_pages
     page_hash_table _changed_pages;
@@ -1238,26 +1281,9 @@ struct _GC_arrays {
                 /* Committed lengths of memory regions obtained from kernel. */
 # endif
   struct roots _static_roots[MAX_ROOT_SETS];
-# if !defined(MSWIN32) && !defined(MSWINCE) && !defined(CYGWIN32)
-#   define GC_root_index GC_arrays._root_index
-    struct roots * _root_index[RT_SIZE];
-# endif
   struct exclusion _excl_table[MAX_EXCLUSIONS];
   /* Block header index; see gc_headers.h */
-  bottom_index * _all_nils;
-  bottom_index * _top_index [TOP_SZ];
-# ifdef ENABLE_TRACE
-#   define GC_trace_addr GC_arrays._trace_addr
-    ptr_t _trace_addr;
-# endif
-# ifdef SAVE_CALL_CHAIN
-#   define GC_last_stack GC_arrays._last_stack
-    struct callinfo _last_stack[NFRAMES];
-                /* Stack at last garbage collection.  Useful for        */
-                /* debugging mysterious object disappearances.  In the  */
-                /* multithreaded case, we currently only save the       */
-                /* calling stack.                                       */
-# endif
+  bottom_index * _top_index[TOP_SZ];
 };
 
 GC_API_PRIV GC_FAR struct _GC_arrays GC_arrays;
@@ -1275,6 +1301,9 @@ GC_API_PRIV GC_FAR struct _GC_arrays GC_arrays;
 #define GC_large_allocd_bytes GC_arrays._large_allocd_bytes
 #define GC_large_free_bytes GC_arrays._large_free_bytes
 #define GC_last_heap_addr GC_arrays._last_heap_addr
+#define GC_mark_stack GC_arrays._mark_stack
+#define GC_mark_stack_limit GC_arrays._mark_stack_limit
+#define GC_mark_stack_top GC_arrays._mark_stack_top
 #define GC_mark_procs GC_arrays._mark_procs
 #define GC_max_large_allocd_bytes GC_arrays._max_large_allocd_bytes
 #define GC_modws_valid_offsets GC_arrays._modws_valid_offsets
@@ -1373,12 +1402,23 @@ GC_EXTERN word GC_n_heap_sects; /* Number of separately added heap      */
 
 GC_EXTERN word GC_page_size;
 
+/* Round up allocation size to a multiple of a page size.       */
+/* GC_setpagesize() is assumed to be already invoked.           */
+#define ROUNDUP_PAGESIZE(bytes) \
+                (((bytes) + GC_page_size - 1) & ~(GC_page_size - 1))
+
+/* Same as above but used to make GET_MEM() argument safe.      */
+#ifdef MMAP_SUPPORTED
+# define ROUNDUP_PAGESIZE_IF_MMAP(bytes) ROUNDUP_PAGESIZE(bytes)
+#else
+# define ROUNDUP_PAGESIZE_IF_MMAP(bytes) (bytes)
+#endif
+
 #if defined(MSWIN32) || defined(MSWINCE) || defined(CYGWIN32)
   struct _SYSTEM_INFO;
   GC_EXTERN struct _SYSTEM_INFO GC_sysinfo;
   GC_INNER GC_bool GC_is_heap_base(ptr_t p);
 #endif
-
 
 GC_EXTERN word GC_black_list_spacing;
                         /* Average number of bytes between blacklisted  */
@@ -1806,9 +1846,16 @@ GC_INNER ptr_t GC_allocobj(size_t sz, int kind);
                                 /* head.  Sz is in granules.            */
 
 #ifdef GC_ADD_CALLER
-# define GC_DBG_RA GC_RETURN_ADDR,
+  /* GC_DBG_EXTRAS is used by GC debug API functions (unlike GC_EXTRAS  */
+  /* used by GC debug API macros) thus GC_RETURN_ADDR_PARENT (pointing  */
+  /* to client caller) should be used if possible.                      */
+# ifdef GC_RETURN_ADDR_PARENT
+#  define GC_DBG_EXTRAS GC_RETURN_ADDR_PARENT, NULL, 0
+# else
+#  define GC_DBG_EXTRAS GC_RETURN_ADDR, NULL, 0
+# endif
 #else
-# define GC_DBG_RA /* empty */
+# define GC_DBG_EXTRAS "unknown", 0
 #endif
 
 /* We make the GC_clear_stack() call a tail one, hoping to get more of  */
@@ -1894,7 +1941,7 @@ GC_EXTERN void (*GC_print_heap_obj)(ptr_t p);
 
 GC_EXTERN GC_bool GC_have_errors; /* We saw a smashed or leaked object. */
                                   /* Call error printing routine        */
-                                  /* occasionally.  It is ok to read it */
+                                  /* occasionally.  It is OK to read it */
                                   /* without acquiring the lock.        */
 
 #define VERBOSE 2
@@ -2345,14 +2392,15 @@ GC_INNER ptr_t GC_store_debug_info(ptr_t p, word sz, const char *str,
 #endif /* PARALLEL_MARK */
 
 #if defined(GC_PTHREADS) && !defined(GC_WIN32_THREADS) && !defined(NACL) \
-    && !defined(SIG_SUSPEND)
+    && !defined(GC_DARWIN_THREADS) && !defined(SIG_SUSPEND)
   /* We define the thread suspension signal here, so that we can refer  */
   /* to it in the dirty bit implementation, if necessary.  Ideally we   */
   /* would allocate a (real-time?) signal using the standard mechanism. */
   /* unfortunately, there is no standard mechanism.  (There is one      */
   /* in Linux glibc, but it's not exported.)  Thus we continue to use   */
   /* the same hard-coded signals we've always used.                     */
-# if defined(GC_LINUX_THREADS) || defined(GC_DGUX386_THREADS)
+# if (defined(GC_LINUX_THREADS) || defined(GC_DGUX386_THREADS)) \
+     && !defined(GC_USESIGRT_SIGNALS)
 #   if defined(SPARC) && !defined(SIGPWR)
       /* SPARC/Linux doesn't properly define SIGPWR in <signal.h>.      */
       /* It is aliased to SIGLOST in asm/signal.h, though.              */
@@ -2361,12 +2409,14 @@ GC_INNER ptr_t GC_store_debug_info(ptr_t p, word sz, const char *str,
       /* Linuxthreads itself uses SIGUSR1 and SIGUSR2.                  */
 #     define SIG_SUSPEND SIGPWR
 #   endif
-# elif !defined(GC_OPENBSD_THREADS) && !defined(GC_DARWIN_THREADS)
-#   if defined(_SIGRTMIN)
-#     define SIG_SUSPEND _SIGRTMIN + 6
-#   else
-#     define SIG_SUSPEND SIGRTMIN + 6
+# elif defined(GC_OPENBSD_THREADS)
+#   ifndef GC_OPENBSD_UTHREADS
+#     define SIG_SUSPEND SIGXFSZ
 #   endif
+# elif defined(_SIGRTMIN)
+#   define SIG_SUSPEND _SIGRTMIN + 6
+# else
+#   define SIG_SUSPEND SIGRTMIN + 6
 # endif
 #endif /* GC_PTHREADS && !SIG_SUSPEND */
 

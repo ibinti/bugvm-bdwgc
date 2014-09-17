@@ -67,7 +67,7 @@ typedef void * GC_PTR;  /* preserved only for backward compatibility    */
 #endif
 
 /* Get the GC library version. The returned value is a constant in the  */
-/* form: ((version_major<<16) | (version_minor<<8) | alpha_version).    */
+/* form: ((version_major<<16) | (version_minor<<8) | version_micro).    */
 GC_API unsigned GC_CALL GC_get_version(void);
 
 /* Public read-only variables */
@@ -192,8 +192,11 @@ GC_API GC_ATTR_DEPRECATED GC_finalizer_notifier_proc GC_finalizer_notifier;
 GC_API void GC_CALL GC_set_finalizer_notifier(GC_finalizer_notifier_proc);
 GC_API GC_finalizer_notifier_proc GC_CALL GC_get_finalizer_notifier(void);
 
-GC_API GC_ATTR_DEPRECATED int GC_dont_gc;
-                        /* != 0 ==> Don't collect.  In versions 6.2a1+, */
+GC_API
+# ifndef GC_DONT_GC
+    GC_ATTR_DEPRECATED
+# endif
+  int GC_dont_gc;       /* != 0 ==> Don't collect.  In versions 6.2a1+, */
                         /* this overrides explicit GC_gcollect() calls. */
                         /* Used as a counter, so that nested enabling   */
                         /* and disabling work correctly.  Should        */
@@ -398,8 +401,8 @@ GC_API void GC_CALL GC_init(void);
 /* new object is cleared.  GC_malloc_stubborn promises that no changes  */
 /* to the object will occur after GC_end_stubborn_change has been       */
 /* called on the result of GC_malloc_stubborn.  GC_malloc_uncollectable */
-/* allocates an object that is scanned for pointers to collectable      */
-/* objects, but is not itself collectable.  The object is scanned even  */
+/* allocates an object that is scanned for pointers to collectible      */
+/* objects, but is not itself collectible.  The object is scanned even  */
 /* if it does not appear to be reachable.  GC_malloc_uncollectable and  */
 /* GC_free called on the resulting object implicitly update             */
 /* GC_non_gc_bytes appropriately.                                       */
@@ -426,7 +429,8 @@ GC_API int GC_CALL GC_posix_memalign(void ** /* memptr */, size_t /* align */,
 /* Explicitly deallocate an object.  Dangerous if used incorrectly.     */
 /* Requires a pointer to the base of an object.                         */
 /* If the argument is stubborn, it should not be changeable when freed. */
-/* An object should not be enabled for finalization when it is          */
+/* An object should not be enabled for finalization (and it should not  */
+/* contain registered disappearing links of any kind) when it is        */
 /* explicitly deallocated.                                              */
 /* GC_free(0) is a no-op, as required by ANSI C for free.               */
 GC_API void GC_CALL GC_free(void *);
@@ -661,7 +665,7 @@ struct GC_prof_stats_s {
 /* should pass the size of the buffer (of GC_prof_stats_s type) to fill */
 /* in the values - this is for interoperability between different GC    */
 /* versions, an old client could have fewer fields, and vice versa,     */
-/* client could use newer gc.h (with more entires declared in the       */
+/* client could use newer gc.h (with more entries declared in the       */
 /* structure) than that of the linked libgc binary; in the latter case, */
 /* unsupported (unknown) fields are filled in with -1.  Return the size */
 /* (in bytes) of the filled in part of the structure (excluding all     */
@@ -951,7 +955,7 @@ GC_API void GC_CALL GC_debug_register_finalizer(void * /* obj */,
         /* allocated by GC_malloc or friends. Obj may also be   */
         /* NULL or point to something outside GC heap (in this  */
         /* case, fn is ignored, *ofn and *ocd are set to NULL). */
-        /* Note that any garbage collectable object referenced  */
+        /* Note that any garbage collectible object referenced  */
         /* by cd will be considered accessible until the        */
         /* finalizer is invoked.                                */
 
@@ -1059,7 +1063,10 @@ GC_API int GC_CALL GC_general_register_disappearing_link(void ** /* link */,
         /* email discussion with John Ellis.                    */
         /* link must be non-NULL (and be properly aligned).     */
         /* obj must be a pointer to the first word of an object */
-        /* allocated by GC_malloc or friends.  It is unsafe to  */
+        /* allocated by GC_malloc or friends.   A link          */
+        /* disappears when it is unregistered manually, or when */
+        /* (*link) is cleared, or when the object containing    */
+        /* this link is garbage collected.  It is unsafe to     */
         /* explicitly deallocate the object containing link.    */
         /* Explicit deallocation of obj may or may not cause    */
         /* link to eventually be cleared.                       */
@@ -1158,6 +1165,9 @@ GC_API GC_warn_proc GC_CALL GC_get_warn_proc(void);
 /* GC_ignore_warn_proc may be used as an argument for GC_set_warn_proc  */
 /* to suppress all warnings (unless statistics printing is turned on).  */
 GC_API void GC_CALLBACK GC_ignore_warn_proc(char *, GC_word);
+
+/* Change file descriptor of GC log.  Unavailable on some targets.      */
+GC_API void GC_CALL GC_set_log_fd(int);
 
 /* abort_func is invoked on GC fatal aborts (just before OS-dependent   */
 /* abort or exit(1) is called).  Must be non-NULL.  The default one     */
@@ -1266,8 +1276,9 @@ GC_API void * GC_CALL GC_call_with_stack_base(GC_stack_base_func /* fn */,
 
   /* Explicitly enable GC_register_my_thread() invocation.              */
   /* Done implicitly if a GC thread-creation function is called (or     */
-  /* implicit thread registration is activated).  Otherwise, it must    */
-  /* be called from the main (or any previously registered) thread      */
+  /* implicit thread registration is activated, or the collector is     */
+  /* compiled with GC_ALWAYS_MULTITHREADED defined).  Otherwise, it     */
+  /* must be called from the main (or any previously registered) thread */
   /* between the collector initialization and the first explicit        */
   /* registering of a thread (it should be called as late as possible). */
   GC_API void GC_CALL GC_allow_register_threads(void);
@@ -1284,7 +1295,7 @@ GC_API void * GC_CALL GC_call_with_stack_base(GC_stack_base_func /* fn */,
   /* functions are called to create the thread, e.g. by including gc.h  */
   /* (which redefines some system functions) before calling the system  */
   /* thread creation function.  Nonetheless, thread cleanup routines    */
-  /* (eg., pthread key destructor) typically require manual thread      */
+  /* (e.g., pthread key destructor) typically require manual thread     */
   /* registering (and unregistering) if pointers to GC-allocated        */
   /* objects are manipulated inside.                                    */
   /* It is also always done implicitly on some platforms if             */
@@ -1472,7 +1483,7 @@ GC_API void GC_apply_to_each_object(int (*apply_func)(void *, unsigned char, siz
 
 #if defined(GC_WIN32_THREADS) \
     && (!defined(GC_PTHREADS) || defined(GC_BUILD) || defined(WINAPI))
-                /* Note: for Cygwin and win32-pthread, this is skipped  */
+                /* Note: for Cygwin and pthreads-win32, this is skipped */
                 /* unless windows.h is included before gc.h.            */
 
 # if !defined(GC_NO_THREAD_DECLS) || defined(GC_BUILD)
@@ -1592,7 +1603,7 @@ GC_API int GC_CALL GC_get_force_unmap_on_gcollect(void);
 /* THREAD_LOCAL_ALLOC defined and the initial allocation call is not    */
 /* to GC_malloc() or GC_malloc_atomic().                                */
 
-#ifdef __CYGWIN32__
+#if defined(__CYGWIN32__) || defined(__CYGWIN__)
   /* Similarly gnu-win32 DLLs need explicit initialization from the     */
   /* main program, as does AIX.                                         */
   extern int _data_start__[], _data_end__[], _bss_start__[], _bss_end__[];
@@ -1609,10 +1620,24 @@ GC_API int GC_CALL GC_get_force_unmap_on_gcollect(void);
 # define GC_DATAEND ((void *)((ulong)_end))
 # define GC_INIT_CONF_ROOTS GC_add_roots(GC_DATASTART, GC_DATAEND)
 #elif (defined(PLATFORM_ANDROID) || defined(__ANDROID__)) \
-      && defined(__arm__) && !defined(GC_NOT_DLL)
-  /* Required if GC is built as shared lib with -D IGNORE_DYNAMIC_LOADING. */
+      && !defined(GC_NOT_DLL)
+# pragma weak __data_start
   extern int __data_start[], _end[];
-# define GC_INIT_CONF_ROOTS GC_add_roots(__data_start, _end)
+# pragma weak _etext
+# pragma weak __dso_handle
+  extern int _etext[], __dso_handle[];
+  /* Explicitly register caller static data roots (__data_start points  */
+  /* to the beginning typically but NDK "gold" linker could provide it  */
+  /* incorrectly, so the workaround is to check the value and use       */
+  /* __dso_handle as an alternative data start reference if provided).  */
+  /* It also works for Android/x86 target where __data_start is not     */
+  /* defined currently (regardless of linker used).                     */
+# define GC_INIT_CONF_ROOTS \
+                (void)((GC_word)__data_start < (GC_word)_etext \
+                        && (GC_word)_etext < (GC_word)__dso_handle ? \
+                            (GC_add_roots(__dso_handle, _end), 0) : \
+                       (GC_word)__data_start != 0 ? \
+                            (GC_add_roots(__data_start, _end), 0) : 0)
 #else
 # define GC_INIT_CONF_ROOTS /* empty */
 #endif
