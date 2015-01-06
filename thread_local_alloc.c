@@ -82,6 +82,16 @@ static void return_freelists(void **fl, void **gfl)
     }
 }
 
+/*
+ * RoboVM note: Added to re-set the TLS on thread exit to allow thread local
+ * allocations to happen in TLS destructors. GC_unregister_my_thread_inner()
+ * will finally set the GC_thread_key to NULL which will stop this destructor
+ * from being called repeatedly.
+ */
+static void reset_thread_key(void* v) {
+    pthread_setspecific(GC_thread_key, v);
+}
+
 /* Each thread structure must be initialized.   */
 /* This call must be made from the new thread.  */
 GC_INNER void GC_init_thread_local(GC_tlfs p)
@@ -91,7 +101,7 @@ GC_INNER void GC_init_thread_local(GC_tlfs p)
     GC_ASSERT(I_HOLD_LOCK());
     if (!EXPECT(keys_initialized, TRUE)) {
         GC_ASSERT((word)&GC_thread_key % sizeof(word) == 0);
-        if (0 != GC_key_create(&GC_thread_key, 0)) {
+        if (0 != GC_key_create(&GC_thread_key, reset_thread_key)) {
             ABORT("Failed to create key for local allocator");
         }
         keys_initialized = TRUE;
