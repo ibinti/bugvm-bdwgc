@@ -355,6 +355,8 @@ static ptr_t marker_sp[MAX_MARKERS - 1] = {0};
   }
 #endif /* GC_DARWIN_THREADS */
 
+static word mark_thread_init_done = 0;
+
 STATIC void * GC_mark_thread(void * id)
 {
   word my_mark_no = 0;
@@ -371,6 +373,9 @@ STATIC void * GC_mark_thread(void * id)
 # if defined(GC_DARWIN_THREADS) && !defined(GC_NO_THREADS_DISCOVERY)
     marker_mach_threads[(word)id] = mach_thread_self();
 # endif
+
+  while (!__sync_bool_compare_and_swap(&mark_thread_init_done, 0, 1))
+    ;
 
   for (;; ++my_mark_no) {
     /* GC_mark_no is passed only to allow GC_help_marker to terminate   */
@@ -435,6 +440,7 @@ start_mark_threads(void)
         }
       }
 #   endif /* HPUX || GC_DGUX386_THREADS */
+    __sync_fetch_and_and(&mark_thread_init_done, 0);
     for (i = 0; i < available_markers_m1; ++i) {
       if (0 != REAL_FUNC(pthread_create)(GC_mark_threads + i, &attr,
                               GC_mark_thread, (void *)(word)i)) {
@@ -443,6 +449,8 @@ start_mark_threads(void)
         /* Don't try to create other marker threads.    */
         break;
       }
+      while (!__sync_bool_compare_and_swap(&mark_thread_init_done, 1, 0))
+        ;
     }
     GC_markers_m1 = i;
     (void)pthread_attr_destroy(&attr);
