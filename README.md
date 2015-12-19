@@ -1,5 +1,9 @@
 # Boehm-Demers-Weiser Garbage Collector
 
+The Boehm-Demers-Weiser conservative C/C++ Garbage Collector (libgc, bdwgc, boehmgc) 
+http://www.hpl.hp.com/personal/Hans_Boehm/gc/
+
+
 This is version 7.5.0 (next release development) of a conservative garbage
 collector for C and C++.
 
