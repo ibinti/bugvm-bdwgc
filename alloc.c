@@ -509,7 +509,7 @@ STATIC void per_live_object_helper(struct hblk *hbp, word fn)
     }
 }
 
-GC_API void GC_rvm_apply_to_each_live_object(void (*apply_func)(void *, unsigned char, size_t, void *), void *data)
+GC_API void GC_bugvm_apply_to_each_live_object(void (*apply_func)(void *, unsigned char, size_t, void *), void *data)
 {
     int dummy;
     per_live_object_iterator iterator;
@@ -576,7 +576,7 @@ STATIC void per_object_helper(struct hblk *hbp, word fn)
     }
 }
 
-GC_API void GC_rvm_apply_to_each_object(int (*apply_func)(void *, unsigned char, size_t, int, void *), void *data)
+GC_API void GC_bugvm_apply_to_each_object(int (*apply_func)(void *, unsigned char, size_t, int, void *), void *data)
 {
     int dummy;
     per_object_iterator iterator;
